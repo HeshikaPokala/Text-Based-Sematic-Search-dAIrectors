@@ -12,6 +12,7 @@ torch.set_num_threads(1)
 # ======================================================
 import re
 import faiss
+import pickle
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
@@ -56,18 +57,12 @@ def parse_srt(file_path):
 
         clips.append({
             "movie": os.path.basename(file_path),
-        
-            # numeric (for internal use if ever needed)
             "start_sec": time_to_seconds(start),
             "end_sec": time_to_seconds(end),
-        
-            # original timestamps (for display)
             "start_time": start,
             "end_time": end,
-        
             "text": text.strip('"')
         })
-
 
     return clips
 
@@ -75,20 +70,21 @@ def parse_srt(file_path):
 # ======================================================
 # 4. Load all subtitle files
 # ======================================================
-SUBTITLE_DIR = "Movie Subtitles"
+def load_all_subtitles():
+    SUBTITLE_DIR = "Processed Movie Subtitles"
+    raw_clips = []
 
-raw_clips = []
+    for file in os.listdir(SUBTITLE_DIR):
+        if file.endswith(".srt"):
+            path = os.path.join(SUBTITLE_DIR, file)
+            raw_clips.extend(parse_srt(path))
 
-for file in os.listdir(SUBTITLE_DIR):
-    if file.endswith(".srt"):
-        path = os.path.join(SUBTITLE_DIR, file)
-        raw_clips.extend(parse_srt(path))
-
-print(f"Raw subtitle clips loaded: {len(raw_clips)}")
+    print(f"Raw subtitle clips loaded: {len(raw_clips)}")
+    return raw_clips
 
 
 # ======================================================
-# 5. Build CONTEXTUAL clips (KEY FIX)
+# 5. Build CONTEXTUAL clips
 # ======================================================
 def build_contextual_clips(clips, window=1):
     contextual = []
@@ -103,174 +99,162 @@ def build_contextual_clips(clips, window=1):
 
         contextual.append({
             "movie": clips[i]["movie"],
-
-            # keep original SRT timestamps
             "start_time": clips[start_idx]["start_time"],
             "end_time": clips[end_idx - 1]["end_time"],
-
-            # numeric (optional, not printed)
             "start_sec": clips[start_idx]["start_sec"],
             "end_sec": clips[end_idx - 1]["end_sec"],
-
             "text": merged_text
         })
 
     return contextual
 
 
-
-clips = build_contextual_clips(raw_clips, window=1)
-print(f"Contextual clips created: {len(clips)}")
-
-
 # ======================================================
-# 6. Load embedding model
+# 6. Behavioral bonus
 # ======================================================
-model = SentenceTransformer("all-mpnet-base-v2")
-
-
-# ======================================================
-# 7. Generate embeddings
-# ======================================================
-texts = [clip["text"] for clip in clips]
-
-embeddings = model.encode(
-    texts,
-    batch_size=8,
-    normalize_embeddings=True,
-    show_progress_bar=True
-)
-
-print("Embedding shape:", embeddings.shape)
-
-
-# ======================================================
-# 8. Build FAISS index (cosine similarity)
-# ======================================================
-dim = embeddings.shape[1]
-index = faiss.IndexFlatIP(dim)
-index.add(np.array(embeddings))
-
-print("Vectors indexed:", index.ntotal)
-
-
-# ======================================================
-# 9. Confidence conversion
-# ======================================================
-def cosine_to_confidence(score):
-    return max(0.0, min(float(score), 1.0)) * 100
-
-
-# ======================================================
-# 10. Behavioral bonus (THIRD FIX)
 def behavior_bonus(text):
     bonus = 0.0
     t = text.strip()
     tl = t.lower()
     words = t.split()
 
-    # --------------------------------------------------
-    # 1️⃣ Hesitation / Delay / Uncertainty
-    # --------------------------------------------------
     if "..." in t:
-        bonus += 0.06  # trailing off / pause
-
+        bonus += 0.06
     if t.endswith(("…", ".", ",")):
-        bonus += 0.03  # unfinished thought
-
+        bonus += 0.03
     if any(tl.startswith(w) for w in ["uh", "um", "well", "so ", "okay", "hmm"]):
-        bonus += 0.05  # hesitation starters
-
-    # --------------------------------------------------
-    # 2️⃣ Confusion / Misunderstanding
-    # --------------------------------------------------
+        bonus += 0.05
     if t.count("?") >= 2:
-        bonus += 0.05  # repeated questioning = confusion
-
+        bonus += 0.05
     if any(p in tl for p in ["what do you mean", "are you saying", "how is that", "why would"]):
-        bonus += 0.04  # clarification-seeking structure
-
-    # --------------------------------------------------
-    # 3️⃣ Awkwardness / Social Tension
-    # --------------------------------------------------
+        bonus += 0.04
     if "..." in t and "?" in t:
-        bonus += 0.04  # question + pause = awkwardness
-
+        bonus += 0.04
     if len(words) <= 4 and "?" not in t:
-        bonus += 0.04  # short, flat reply
-
-    # --------------------------------------------------
-    # 4️⃣ Emotional Shift / Subtle Change
-    # --------------------------------------------------
+        bonus += 0.04
     if any(c in t for c in ["—", "--"]):
-        bonus += 0.04  # interruption / tonal shift
-
+        bonus += 0.04
     if "," in t and len(words) > 6:
-        bonus += 0.02  # mid-sentence pivot
-
-    # --------------------------------------------------
-    # 5️⃣ Defensive / Avoidant Responses
-    # --------------------------------------------------
+        bonus += 0.02
     if t.endswith("?") and not tl.startswith(("why", "what", "how")):
-        bonus += 0.03  # deflective question
-
+        bonus += 0.03
     if any(tl.startswith(w) for w in ["i think", "maybe", "it depends", "sort of"]):
-        bonus += 0.05  # vagueness
-
-    # --------------------------------------------------
-    # 6️⃣ Conflict / Tension Build-Up
-    # --------------------------------------------------
+        bonus += 0.05
     if "!" in t and "?" in t:
-        bonus += 0.04  # emotional instability
-
+        bonus += 0.04
     if t.isupper() and len(words) > 2:
-        bonus += 0.03  # raised voice / emphasis
-
-    # --------------------------------------------------
-    # 7️⃣ Real-Time Thinking / Processing
-    # --------------------------------------------------
+        bonus += 0.03
     if any(w in tl for w in ["wait", "hold on", "let me think", "give me a second"]):
         bonus += 0.05
-
     if t.count(",") >= 2:
-        bonus += 0.03  # self-correction / thinking aloud
-
-    # --------------------------------------------------
-    # 8️⃣ Reaction-First Moments
-    # --------------------------------------------------
+        bonus += 0.03
     if t.startswith(("...", "—", "-")):
-        bonus += 0.05  # silent reaction before speech
-
+        bonus += 0.05
     if len(words) <= 3 and t.endswith("."):
-        bonus += 0.04  # delayed, minimal response
-
-    # --------------------------------------------------
-    # 9️⃣ Conversational Dynamics
-    # --------------------------------------------------
+        bonus += 0.04
     if t.startswith(("but", "and", "no,")):
-        bonus += 0.03  # interruption / overlap
-
+        bonus += 0.03
     if "/" in t or t.count("-") >= 2:
-        bonus += 0.03  # overlapping dialogue artifacts
-
-    # --------------------------------------------------
-    # 🔟 Meta / Editor-Friendly Moments
-    # --------------------------------------------------
+        bonus += 0.03
     if len(words) <= 5 and "..." in t:
-        bonus += 0.05  # quiet beat
-
+        bonus += 0.05
     if len(words) >= 12 and t.count(",") >= 2:
-        bonus += 0.04  # emotional buildup before reply
+        bonus += 0.04
 
-    # Safety clamp (important)
     return min(bonus, 0.25)
 
 
+# ======================================================
+# 7. Confidence conversion
+# ======================================================
+def cosine_to_confidence(score):
+    return max(0.0, min(float(score), 1.0)) * 100
+
 
 # ======================================================
-# 11. Search function (semantic + behavioral)
+# 8. Initialize model and index (GLOBAL)
+# ======================================================
+# ======================================================
+# 8. Initialize model and index (GLOBAL)
+# ======================================================
+CACHE_DIR = "cache"
+CLIPS_FILE = os.path.join(CACHE_DIR, "clips.pkl")
+INDEX_FILE = os.path.join(CACHE_DIR, "behavenet.index")
+
+def initialize_system():
+    global model, index, clips
+    
+    # 1. Load Model (Fast enough to load every time, ~2-5s)
+    print("Loading SentenceTransformer model...")
+    model = SentenceTransformer("all-mpnet-base-v2")
+    
+    # 2. Check Cache
+    if os.path.exists(CLIPS_FILE) and os.path.exists(INDEX_FILE):
+        print("Found cached data. Loading...")
+        try:
+            with open(CLIPS_FILE, "rb") as f:
+                clips = pickle.load(f)
+            
+            index = faiss.read_index(INDEX_FILE)
+            print(f"✅ Loaded {len(clips)} clips and index with {index.ntotal} vectors from cache.")
+            return
+        except Exception as e:
+            print(f"Error loading cache: {e}. Rebuilding...")
+    
+    # 3. Generate if no cache
+    print("No cache found. Generating embeddings (this may take a while)...")
+    
+    # Ensure cache dir exists
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+        
+    raw_clips = load_all_subtitles()
+    clips = build_contextual_clips(raw_clips, window=1)
+    print(f"Contextual clips created: {len(clips)}")
+    
+    # Generate embeddings
+    texts = [clip["text"] for clip in clips]
+    embeddings = model.encode(
+        texts,
+        batch_size=8,
+        normalize_embeddings=True,
+        show_progress_bar=True
+    )
+    
+    print(f"Embedding shape: {embeddings.shape}")
+    
+    # Build FAISS index
+    dim = embeddings.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    index.add(np.array(embeddings))
+    
+    # Save to cache
+    print("Saving data to cache...")
+    with open(CLIPS_FILE, "wb") as f:
+        pickle.dump(clips, f)
+    
+    faiss.write_index(index, INDEX_FILE)
+    print("✅ System initialized and cached!")
+
+# Run initialization
+initialize_system()
+
+
+# ======================================================
+# 9. Search function (EXPORTABLE)
 # ======================================================
 def search(query, top_k=50, min_confidence=40):
+    """
+    Semantic search function
+    
+    Args:
+        query: Search query string
+        top_k: Number of top results to consider
+        min_confidence: Minimum confidence threshold (0-100)
+    
+    Returns:
+        List of results sorted by confidence
+    """
     query_emb = model.encode([query], normalize_embeddings=True)
     scores, indices = index.search(query_emb, top_k)
 
@@ -288,48 +272,59 @@ def search(query, top_k=50, min_confidence=40):
 
         results.append({
             "movie": clip["movie"],
-            "start_time": clip["start_time"],   # SRT format
-            "end_time": clip["end_time"],       # SRT format
+            "start_time": clip["start_time"],
+            "end_time": clip["end_time"],
             "confidence": round(confidence, 2),
             "text": clip["text"]
         })
 
-
-    # 🔑 IMPORTANT: sort by confidence
     results = sorted(results, key=lambda x: x["confidence"], reverse=True)
-
     return results
 
 
 # ======================================================
-# 12. Interactive semantic search (USER INPUT)
+# 10. Get dataset info (EXPORTABLE)
 # ======================================================
-print("\n🎬 Semantic Footage Search Engine")
-print("Type a natural language query (or 'exit' to quit)\n")
+def get_dataset_info():
+    """Get dataset statistics"""
+    return {
+        "total_clips": len(clips),
+        "unique_movies": len(set(c['movie'] for c in clips)),
+        "model_name": "all-mpnet-base-v2",
+        "embedding_dim": index.d
+    }
 
-while True:
-    user_query = input("🔎 Enter your query: ").strip()
 
-    if user_query.lower() in ["exit", "quit"]:
-        print("\nExiting search. Goodbye 👋")
-        break
+# ======================================================
+# 11. Interactive CLI (for testing)
+# ======================================================
+if __name__ == "__main__":
+    print("\n🎬 Semantic Footage Search Engine (CLI Mode)")
+    print("Type a natural language query (or 'exit' to quit)\n")
 
-    print("\n" + "=" * 80)
-    print(f"🔎 QUERY: {user_query.upper()}")
-    print("=" * 80)
+    while True:
+        user_query = input("🔎 Enter your query: ").strip()
 
-    results = search(user_query)
+        if user_query.lower() in ["exit", "quit"]:
+            print("\nExiting search. Goodbye 👋")
+            break
 
-    if not results:
-        print("No strong matches found.\n")
-        continue
+        print("\n" + "=" * 80)
+        print(f"🔎 QUERY: {user_query.upper()}")
+        print("=" * 80)
 
-    top_5 = results[:5]   # ✅ TOP 5 BY CONFIDENCE
+        results = search(user_query)
 
-    for i, r in enumerate(top_5, 1):
-        print(f"\n{i}. 🎬 MOVIE       : {r['movie']}")
-        print(f"   ⏱️  TIMESTAMPS  : {r['start_time']} → {r['end_time']}")
-        print(f"   📊 CONFIDENCE  : {r['confidence']}%")
-        print(f"   💬 DIALOGUE    : {r['text']}")
+        if not results:
+            print("No strong matches found.\n")
+            continue
 
-    print("\n")  # spacing for next query
+        top_5 = results[:5]
+
+        for i, r in enumerate(top_5, 1):
+            print(f"\n{i}. 🎬 MOVIE       : {r['movie']}")
+            print(f"   ⏱️  TIMESTAMPS  : {r['start_time']} → {r['end_time']}")
+            print(f"   📊 CONFIDENCE  : {r['confidence']}%")
+            print(f"   💬 DIALOGUE    : {r['text']}")
+
+        print("\n")
