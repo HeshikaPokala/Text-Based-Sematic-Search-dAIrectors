@@ -348,7 +348,6 @@ def search(query, top_k=50, min_confidence=40):
             final_results = []
             
     if not final_results:
-        print("⚠️ Reranking yielded no results (or disabled). Using Bi-Encoder.")
         for i, idx in enumerate(indices[0]):
             if i >= top_k: break
             raw_score = float(scores[0][i])
