@@ -57,7 +57,7 @@ Opens locally at `http://localhost:8501`.
 - `requirements.txt`: List of Python libraries required.
 - `cache/`: Stores generated embeddings and FAISS index (auto-generated).
 
-## tech Stack
+## Tech Stack
 
 - **Frontend**: Streamlit
 - **Search Backend**: FAISS (Facebook AI Similarity Search)
@@ -65,3 +65,7 @@ Opens locally at `http://localhost:8501`.
   - Retrieval: `all-mpnet-base-v2`
   - Reranking: `cross-encoder/ms-marco-MiniLM-L-6-v2`
 - **Language**: Python 3.10+
+
+
+## DEMO LINK:
+https://drive.google.com/file/d/1ChfvODNOQIJSXxUUjt3ACfEbWYICvrYJ/view?usp=sharing
