@@ -69,3 +69,6 @@ Opens locally at `http://localhost:8501`.
 
 ## DEMO LINK:
 https://drive.google.com/file/d/10wRwmUJSlUAJB2AEuORgZa05nHd6rpiY/view?usp=drive_link
+
+## TRY IT OUT YOURSELF!:
+https://dairectors.streamlit.app/
